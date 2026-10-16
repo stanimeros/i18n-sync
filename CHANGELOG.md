@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.3.1
+
+- A key added to several languages at once (absent from the lock everywhere) is no longer a conflict: those languages are kept as translated and only the missing ones are filled. Array additions are still detected in any language.
+
 ## 0.3.0
 
 - `claude-cli` provider: review (or translate) through the logged-in Claude Code CLI (`claude -p`), no API key; its reported cost is used as-is.

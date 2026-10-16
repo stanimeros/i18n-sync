@@ -1,6 +1,6 @@
 {
   "name": "@stanimeros/i18n-sync",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Keep all locale files in sync with an LLM. Any language can be the source of a change.",
   "type": "module",
   "bin": {

@@ -55,7 +55,10 @@ export function computeDiff({ values, lock, config, only, force = false, lang, a
     const tracked = lock.languages[l];
     if (!tracked) return false; // language not in the lock yet: treat existing values as in sync
     const h = tracked[k];
-    return h === undefined ? true : h !== hashValue(v);
+    // A key new to every language (e.g. added to en and el in one commit) is not an edit of anything:
+    // the languages that have it are taken as already translated, the rest are filled from the primary.
+    if (h === undefined) return languages.some((x) => lock.languages[x]?.[k] !== undefined);
+    return h !== hashValue(v);
   };
 
   const jobs = [];
@@ -79,7 +82,9 @@ export function computeDiff({ values, lock, config, only, force = false, lang, a
         const tracked = lock?.languages?.[l];
         if (!tracked) return false;
         // removals only count for the primary (same rule as single keys: deletions propagate from the primary only)
-        return cur.some((k) => changed(l, k)) || (l === primary && under(Object.keys(tracked), p).length !== cur.length);
+        // additions count for every language
+        const before = under(Object.keys(tracked), p).length;
+        return cur.some((k) => changed(l, k)) || cur.length > before || (l === primary && before !== cur.length);
       });
       let src = force && withArr.includes(primary) ? primary : touched.includes(primary) ? primary : touched[0];
       if (!src) src = withArr.includes(primary) ? primary : withArr[0];

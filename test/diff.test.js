@@ -225,3 +225,16 @@ test('arrays: element removed only in Greek -> refilled from primary, not propag
   assert.deepEqual(r.deletions, []);
   assert.deepEqual(r.jobs.map((j) => [j.key, j.source, j.targets]), [['l.0', 'en', ['el']], ['l.1', 'en', ['el']]]);
 });
+
+test('key added to several languages at once is not a conflict; only missing languages are filled', () => {
+  const lock = lockOf({ en: { a: 'A' }, el: { a: 'Α' }, de: { a: 'a' } });
+  const r = run({ en: { a: 'A', n: 'New' }, el: { a: 'Α', n: 'Νέο' }, de: { a: 'a' } }, lock);
+  assert.deepEqual(r.conflicts, []);
+  assert.deepEqual(r.jobs.map((j) => [j.key, j.source, j.targets]), [['n', 'en', ['de']]]);
+});
+
+test('key added only in Greek still propagates from Greek', () => {
+  const lock = lockOf({ en: { a: 'A' }, el: { a: 'Α' }, de: { a: 'a' } });
+  const r = run({ en: { a: 'A' }, el: { a: 'Α', n: 'Νέο' }, de: { a: 'a' } }, lock);
+  assert.deepEqual(r.jobs.map((j) => [j.key, j.source, j.targets]), [['n', 'el', ['en', 'de']]]);
+});
