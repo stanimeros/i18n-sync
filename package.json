@@ -1,0 +1,29 @@
+{
+  "name": "@stanimeros/i18n-sync",
+  "version": "0.1.0",
+  "description": "Keep all locale files in sync with an LLM. Any language can be the source of a change.",
+  "type": "module",
+  "bin": {
+    "i18n-sync": "./bin/i18n-sync.js"
+  },
+  "files": [
+    "bin",
+    "src",
+    "example",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md"
+  ],
+  "scripts": {
+    "test": "node --test test/"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "keywords": ["i18n", "l10n", "translation", "localization", "gemini", "llm", "arb", "flutter", "i18next"],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/stanimeros/i18n-sync.git"
+  },
+  "license": "MIT"
+}

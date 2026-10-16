@@ -1,0 +1,10 @@
+{
+  "format": "json",
+  "files": "locales/{lang}.json",
+  "languages": ["en", "el"],
+  "primary": "en",
+  "lockFile": "i18n.lock.json",
+  "model": "gemini-2.5-flash",
+  "context": "A small demo app for managing to-do lists.",
+  "glossary": { "Todo": "Todo" }
+}

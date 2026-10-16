@@ -1,0 +1,11 @@
+{
+  "app": {
+    "title": "Todo",
+    "tagline": "Get things done"
+  },
+  "list": {
+    "empty": "You have {{count}} tasks left.",
+    "tips": ["Press <b>N</b> to add a task", "Swipe to delete"]
+  },
+  "farewell": "See you soon!"
+}
