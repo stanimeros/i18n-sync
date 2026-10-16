@@ -12,6 +12,7 @@ import path from 'node:path';
  * @property {string} model
  * @property {string} apiKeyEnv
  * @property {number} batchSize
+ * @property {number} concurrency
  * @property {string} context
  * @property {Record<string, string | Record<string,string>>} glossary
  * @property {Record<string,string>} tone
@@ -123,6 +124,8 @@ export function normalizeConfig(raw, baseDir) {
 
   const batchSize = raw.batchSize ?? 40;
   if (!Number.isInteger(batchSize) || batchSize < 1) errors.push('"batchSize" must be a positive integer.');
+  const concurrency = raw.concurrency ?? 8;
+  if (!Number.isInteger(concurrency) || concurrency < 1) errors.push('"concurrency" must be a positive integer.');
 
   const provider = raw.provider ?? 'gemini';
   if (provider !== 'gemini') errors.push(`Unsupported "provider": ${JSON.stringify(provider)} (only "gemini" is available).`);
@@ -158,6 +161,7 @@ export function normalizeConfig(raw, baseDir) {
     model: raw.model ?? 'gemini-2.5-flash',
     apiKeyEnv: raw.apiKeyEnv ?? 'GEMINI_API_KEY',
     batchSize,
+    concurrency,
     context: raw.context ?? '',
     glossary,
     tone,

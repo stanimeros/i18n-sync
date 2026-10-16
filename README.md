@@ -44,8 +44,9 @@ Commit `i18n.lock.json` together with your locale files.
 | `model` | `"gemini-2.5-flash"` | Gemini model |
 | `apiKeyEnv` | `"GEMINI_API_KEY"` | Environment variable holding the key (`.env` in cwd is loaded automatically) |
 | `batchSize` | `40` | Max strings per request |
+| `concurrency` | `8` | Parallel requests |
 | `context` | `""` | Free-text description of your product/audience for the translator |
-| `glossary` | `{}` | `{"Acme": "Acme"}` (same value = never translate) or `{"term": {"el": "...", "de": "..."}}` |
+| `glossary` | `{}` | `{"Acme": "Acme"}` (same value = never translate) or `{"term": {"el": "...", "de": "..."}}`. Checked on every result: a miss is retried once, then accepted with a warning |
 | `tone` | `{}` | Per target language, e.g. `{"de": "formal (Sie)"}` |
 | `gitContext` | `true` | Walk the source file's git history back to the last synced version, so the model sees the previous text and the commit messages since then (works for committed and uncommitted edits) |
 

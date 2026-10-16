@@ -183,3 +183,21 @@ test('gemini provider retries on 429 and parses JSON', async () => {
   const body = JSON.parse(seenReq.init.body);
   assert.equal(body.generationConfig.responseMimeType, 'application/json');
 });
+
+test('glossary miss is retried once, then accepted; whitespace restored', async () => {
+  const { dir, cfg } = setup({ glossary: { AI: 'AI' } });
+  write(dir, 'locales/en.json', { a: 'AI tools ' });
+  write(dir, 'locales/el.json', { a: 'Εργαλεία AI ' });
+  const calls = [];
+  const t = async (args) => {
+    calls.push(args);
+    return Object.fromEntries(args.items.map((i) => [i.id, 'KI-Werkzeuge']));
+  };
+  const logs = [];
+  const r = await runSync(cfg, { translate: t, log: (m) => logs.push(m) });
+  assert.equal(r.failures.length, 0);
+  assert.equal(calls.length, 2);
+  assert.match(calls[1].items[0].failure, /glossary/);
+  assert.equal(readJson(dir, 'locales/de.json').a, 'KI-Werkzeuge ');
+  assert.ok(logs.some((l) => /warning: de a: glossary/.test(l)));
+});

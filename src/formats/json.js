@@ -7,6 +7,7 @@ import { resolvePattern } from '../config.js';
  * @property {Map<string,string>} values  flat key -> translatable string
  * @property {Map<string,any>} extras     non-string leaves (numbers, booleans, null, empty containers), copied verbatim
  * @property {string[]} order             all keys (values + extras) in file order
+ * @property {Map<string,number>} arrays  array path -> length (arrays are positional, see diff.js)
  * @property {string[]} files             files that were read
  */
 
@@ -17,11 +18,12 @@ const SKIP_DIRS = new Set(['node_modules', '.git']);
  * Flatten a nested object. Arrays become `path.0`, `path.1`, ...
  * @param {any} obj
  * @param {string} [prefix]
- * @returns {{values: Map<string,string>, extras: Map<string,any>, order: string[]}}
+ * @returns {{values: Map<string,string>, extras: Map<string,any>, order: string[], arrays: Map<string,number>}}
  */
 export function flatten(obj, prefix = '') {
-  const out = { values: new Map(), extras: new Map(), order: [] };
+  const out = { values: new Map(), extras: new Map(), order: [], arrays: new Map() };
   const walk = (node, p) => {
+    if (Array.isArray(node) && p) out.arrays.set(p, node.length);
     const entries = Array.isArray(node) ? node.map((v, i) => [String(i), v]) : Object.entries(node);
     for (const [k, v] of entries) {
       const key = p ? `${p}.${k}` : k;
@@ -150,7 +152,7 @@ export function parse(text, ns) {
  * @returns {LoadResult}
  */
 export function load(lang, cfg) {
-  const res = { values: new Map(), extras: new Map(), order: [], files: [] };
+  const res = { values: new Map(), extras: new Map(), order: [], arrays: new Map(), files: [] };
   const hasNs = cfg.files.includes('{ns}');
   const nsList = hasNs ? [...new Set([...discoverNamespaces(cfg, cfg.primary), ...discoverNamespaces(cfg, lang)])] : [undefined];
   for (const ns of nsList) {
@@ -171,6 +173,7 @@ export function load(lang, cfg) {
     for (const [k, v] of flat.values) res.values.set(pre + k, v);
     for (const [k, v] of flat.extras) res.extras.set(pre + k, v);
     for (const k of flat.order) res.order.push(pre + k);
+    for (const [k, n] of flat.arrays) res.arrays.set(pre + k, n);
     res.files.push(file);
   }
   return res;

@@ -27,3 +27,20 @@ test('rejects broken translations', () => {
   assert.equal(validateTranslation('Hi', 42).ok, false);
   assert.equal(validateTranslation('{{a}}', '{{a}} {{a}}').ok, false);
 });
+
+import { matchWhitespace, checkGlossary } from '../src/placeholders.js';
+
+test('matchWhitespace restores leading/trailing whitespace of the source', () => {
+  assert.equal(matchWhitespace('From idea to launch. ', 'Von der Idee zum Launch.'), 'Von der Idee zum Launch. ');
+  assert.equal(matchWhitespace(' x\n', '  y  '), ' y\n');
+  assert.equal(matchWhitespace('a', ' b '), 'b');
+});
+
+test('checkGlossary enforces fixed renderings on word boundaries', () => {
+  const g = { AI: 'AI', Acme: { de: 'Acme GmbH' } };
+  assert.equal(checkGlossary('AI automation', 'automatisation par IA', g, 'fr').ok, false);
+  assert.equal(checkGlossary('AI automation', 'automatisation par AI', g, 'fr').ok, true);
+  assert.equal(checkGlossary('MAIN menu', 'menu principal', g, 'fr').ok, true); // no word-boundary match
+  assert.equal(checkGlossary('Acme rocks', 'Acme rockt', g, 'de').ok, false);
+  assert.equal(checkGlossary('Acme rocks', 'Acme rocks', g, 'fr').ok, true); // no rendering for fr
+});

@@ -49,6 +49,7 @@ export function buildPrompt({ sourceLang, targetLang, cfg, note }) {
       '- Preserve ICU MessageFormat syntax: {name}, and plural/select structures. Keep keywords (plural, select, one, other, =0 ...) and argument names in English; translate only the human text inside branches, and use the plural categories valid for the target language.',
       '- Preserve HTML tags and markdown exactly; translate only the text between them.',
       '- Preserve leading/trailing whitespace and newlines (\\n) exactly.',
+      '- End the translation the way the source ends: add no final period or other punctuation the source does not have.',
       '- Keep the meaning, length and register suitable for a UI. Do not add explanations.',
       '- If an item has "currentTranslation" and "previousSource": the source text changed from previousSource to text. Make the MINIMAL edit to currentTranslation that reflects this change and keep all unchanged wording as is.',
       '- If an item has "reference", it is the same text in the project\'s primary language; use it only to disambiguate meaning.',

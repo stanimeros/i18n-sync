@@ -1,6 +1,6 @@
 import { computeDiff } from './diff.js';
 import { readLock, writeLock, buildLock, hashValue } from './lock.js';
-import { validateTranslation } from './placeholders.js';
+import { validateTranslation, matchWhitespace, checkGlossary } from './placeholders.js';
 import * as jsonFormat from './formats/json.js';
 import * as arbFormat from './formats/arb.js';
 import { fileAt, fileHistory } from './git.js';
@@ -8,7 +8,6 @@ import { provider as gemini } from './llm/gemini.js';
 
 const FORMATS = { json: jsonFormat, arb: arbFormat };
 const PROVIDERS = { gemini };
-const CONCURRENCY = 4;
 
 /**
  * @typedef {Object} SyncOptions
@@ -123,6 +122,8 @@ async function runJobs(jobs, cfg, loaded, translate, log) {
     return item;
   };
 
+  const total = [...groups.values()].reduce((n, g) => n + g.entries.length, 0);
+  let done = 0;
   for (const { source, target, entries } of groups.values()) {
     for (let i = 0; i < entries.length; i += cfg.batchSize) {
       const chunk = entries.slice(i, i + cfg.batchSize);
@@ -138,8 +139,15 @@ async function runJobs(jobs, cfg, loaded, translate, log) {
           const out = await translate({ items, sourceLang: source, targetLang: target, cfg, note });
           const bad = {};
           for (const [id, c] of pending) {
-            const v = out?.[id];
-            const res = v === undefined ? { ok: false, reason: 'missing from response' } : validateTranslation(c.job.sourceNew, v);
+            let v = out?.[id];
+            if (typeof v === 'string') v = matchWhitespace(c.job.sourceNew, v);
+            let res = v === undefined ? { ok: false, reason: 'missing from response' } : validateTranslation(c.job.sourceNew, v);
+            if (res.ok) {
+              // Glossary misses are soft: retried once, then accepted with a warning so the key is not stuck.
+              const gl = checkGlossary(c.job.sourceNew, v, cfg.glossary, target);
+              if (!gl.ok && !failureNotes) res = gl;
+              else if (!gl.ok) log?.(`  warning: ${target} ${c.job.key}: ${gl.reason}`);
+            }
             if (res.ok) results.set(rk(target, c.job.key), v);
             else bad[id] = res.reason;
           }
@@ -159,10 +167,12 @@ async function runJobs(jobs, cfg, loaded, translate, log) {
           for (const [id, c] of ids) if (!results.has(rk(target, c.job.key))) bad[id] = e.message;
         }
         for (const [id, reason] of Object.entries(bad)) failures.push({ key: ids.get(id).job.key, lang: target, reason });
+        done += chunk.length;
+        log?.(`  [${done}/${total}] ${source} -> ${target}`);
       });
     }
   }
-  await pool(tasks, CONCURRENCY);
+  await pool(tasks, cfg.concurrency);
   return { results, failures };
 }
 
@@ -181,8 +191,9 @@ export async function runSync(cfg, opts = {}) {
   const values = Object.fromEntries(cfg.languages.map((l) => [l, loaded[l].values]));
   const lock = readLock(cfg.lockPath);
 
-  const full = computeDiff({ values, lock, config: cfg });
-  const plan = computeDiff({ values, lock, config: cfg, only: opts.only, force: opts.force, lang: opts.lang });
+  const arrays = loaded[cfg.primary].arrays ? Object.fromEntries(cfg.languages.map((l) => [l, loaded[l].arrays])) : undefined;
+  const full = computeDiff({ values, lock, config: cfg, arrays });
+  const plan = computeDiff({ values, lock, config: cfg, only: opts.only, force: opts.force, lang: opts.lang, arrays });
 
   const report = {
     plan,
@@ -269,9 +280,9 @@ export function formatPlan(plan) {
     lines.push(`warning: ${c.key} changed in ${c.langs.join(', ')}; using ${c.winner}`);
   }
   for (const j of plan.jobs) {
-    lines.push(`${j.mode === 'new' ? 'new   ' : 'update'} ${j.key}  ${j.source} -> ${j.targets.join(', ')}`);
+    lines.push(`${j.realign ? 'realign' : j.mode === 'new' ? 'new    ' : 'update '} ${j.key}  ${j.source} -> ${j.targets.join(', ')}`);
   }
-  for (const d of plan.deletions) lines.push(`delete ${d.key}  (${d.langs.join(', ')})`);
+  for (const d of plan.deletions) lines.push(`delete  ${d.key}  (${d.langs.join(', ')})`);
   return lines;
 }
 

@@ -168,3 +168,60 @@ test('lockOnly when lock is stale but nothing pending', () => {
   assert.equal(r.jobs.length, 1);
   assert.equal(r.jobs[0].source, 'de');
 });
+
+// --- arrays ---------------------------------------------------------------
+const arr = (o) => Object.fromEntries(Object.entries(o).map(([l, a]) => [l, new Map(Object.entries(a))]));
+
+test('arrays: middle element missing in target -> whole array retranslated, no misaligned per-key jobs', () => {
+  const en = { 'rows.0': 'A', 'rows.1': 'B', 'rows.2': 'C', t: 'T' };
+  const el = { 'rows.0': 'Α', 'rows.1': 'Γ', t: 'Τ' };
+  const r = run({ en, el, de: { ...en } }, null, { arrays: arr({ en: { rows: 3 }, el: { rows: 2 }, de: { rows: 3 } }) });
+  const rows = r.jobs.filter((j) => j.key.startsWith('rows.'));
+  assert.deepEqual(rows.map((j) => [j.key, j.source, j.targets, j.mode]), [
+    ['rows.0', 'en', ['el'], 'new'],
+    ['rows.1', 'en', ['el'], 'new'],
+    ['rows.2', 'en', ['el'], 'new'],
+  ]);
+  assert.ok(rows.every((j) => Object.keys(j.existing).length === 0));
+  assert.deepEqual(r.deletions, []);
+});
+
+test('arrays: element added in Greek -> Greek is the source for the whole array', () => {
+  const synced = { en: { 'l.0': 'A' }, el: { 'l.0': 'Α' }, de: { 'l.0': 'a' } };
+  const lock = lockOf(synced);
+  const r = run({ en: { 'l.0': 'A' }, el: { 'l.0': 'Α', 'l.1': 'Β' }, de: { 'l.0': 'a' } }, lock, {
+    arrays: arr({ en: { l: 1 }, el: { l: 2 }, de: { l: 1 } }),
+  });
+  assert.deepEqual(r.jobs.map((j) => [j.key, j.source, j.targets]), [
+    ['l.0', 'el', ['en']], ['l.1', 'el', ['en']], ['l.0', 'el', ['de']], ['l.1', 'el', ['de']],
+  ]);
+});
+
+test('arrays: element removed from primary -> surplus deleted in targets', () => {
+  const synced = { en: { 'l.0': 'A', 'l.1': 'B' }, el: { 'l.0': 'Α', 'l.1': 'Β' }, de: { 'l.0': 'a', 'l.1': 'b' } };
+  const r = run({ en: { 'l.0': 'B' }, el: synced.el, de: synced.de }, lockOf(synced), {
+    arrays: arr({ en: { l: 1 }, el: { l: 2 }, de: { l: 2 } }),
+  });
+  assert.deepEqual(r.deletions.map((d) => [d.key, d.langs]).sort(), [['l.1', ['de']], ['l.1', ['el']]]);
+  assert.deepEqual(r.jobs.map((j) => [j.key, j.targets]), [['l.0', ['el']], ['l.0', ['de']]]);
+});
+
+test('arrays: equal lengths fall back to per-key rules', () => {
+  const r = run({ en: { 'l.0': 'A', 'l.1': 'B' }, el: { 'l.0': 'Α' }, de: {} }, null, {
+    arrays: arr({ en: { l: 2 }, el: { l: 1 } }),
+  });
+  // el misaligned (1 vs 2) -> full retranslate; de has no array -> normal missing-key fill
+  const el = r.jobs.filter((j) => j.targets.includes('el')).map((j) => j.key);
+  assert.deepEqual(el, ['l.0', 'l.1']);
+  const de = r.jobs.filter((j) => j.targets.includes('de')).map((j) => j.key);
+  assert.deepEqual(de, ['l.0', 'l.1']);
+});
+
+test('arrays: element removed only in Greek -> refilled from primary, not propagated', () => {
+  const synced = { en: { 'l.0': 'A', 'l.1': 'B' }, el: { 'l.0': 'Α', 'l.1': 'Β' }, de: { 'l.0': 'a', 'l.1': 'b' } };
+  const r = run({ en: synced.en, el: { 'l.0': 'Α' }, de: synced.de }, lockOf(synced), {
+    arrays: arr({ en: { l: 2 }, el: { l: 1 }, de: { l: 2 } }),
+  });
+  assert.deepEqual(r.deletions, []);
+  assert.deepEqual(r.jobs.map((j) => [j.key, j.source, j.targets]), [['l.0', 'en', ['el']], ['l.1', 'en', ['el']]]);
+});

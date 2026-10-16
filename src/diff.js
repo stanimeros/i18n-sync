@@ -9,6 +9,7 @@ import { hashValue } from './lock.js';
  * @property {string} [sourceOld]     filled in later from git, if available
  * @property {string} sourceNew
  * @property {Record<string,string>} existing  current values of targets that already have one
+ * @property {boolean} [realign]       target array was misaligned; retranslated as a whole
  *
  * @typedef {Object} DiffResult
  * @property {Job[]} jobs
@@ -27,9 +28,10 @@ import { hashValue } from './lock.js';
  * @param {string} [input.only]   restrict to keys starting with this prefix
  * @param {boolean} [input.force] treat the primary as changed for every selected key
  * @param {string} [input.lang]   restrict targets (and deletions) to this language
+ * @param {Record<string, Map<string,number>>} [input.arrays]  array path -> length per language (json format)
  * @returns {DiffResult}
  */
-export function computeDiff({ values, lock, config, only, force = false, lang }) {
+export function computeDiff({ values, lock, config, only, force = false, lang, arrays }) {
   const { languages, primary } = config;
   const order = [primary, ...languages.filter((l) => l !== primary)]; // for key discovery
   const val = (l, k) => values[l]?.get(k);
@@ -60,8 +62,48 @@ export function computeDiff({ values, lock, config, only, force = false, lang })
   const deletions = [];
   const conflicts = [];
 
+  // Arrays are positional: when a language's array has a different length than the source's, its
+  // elements no longer line up, so per-key comparison is meaningless. Re-translate that language's
+  // whole array from the source and drop its surplus elements.
+  const handled = new Set(); // `${lang}\0${key}` taken care of here, skipped by the per-key pass below
+  const isHandled = (l, k) => handled.has(`${l}\u0000${k}`);
+  if (arrays) {
+    const paths = [...new Set(languages.flatMap((l) => [...(arrays[l]?.keys() ?? [])]))].sort((a, b) => a.length - b.length);
+    const done = Object.fromEntries(languages.map((l) => [l, []])); // misaligned paths per language
+    const under = (keys, p) => [...keys].filter((k) => k.startsWith(`${p}.`));
+    for (const p of paths) {
+      const withArr = languages.filter((l) => arrays[l]?.has(p));
+      if (new Set(withArr.map((l) => arrays[l].get(p))).size <= 1) continue;
+      const touched = withArr.filter((l) => {
+        const cur = under(values[l]?.keys() ?? [], p);
+        const tracked = lock?.languages?.[l];
+        if (!tracked) return false;
+        // removals only count for the primary (same rule as single keys: deletions propagate from the primary only)
+        return cur.some((k) => changed(l, k)) || (l === primary && under(Object.keys(tracked), p).length !== cur.length);
+      });
+      let src = force && withArr.includes(primary) ? primary : touched.includes(primary) ? primary : touched[0];
+      if (!src) src = withArr.includes(primary) ? primary : withArr[0];
+      if (!force && touched.length > 1) conflicts.push({ key: p, langs: touched, winner: src });
+      const srcKeys = under(values[src].keys(), p);
+      for (const l of withArr) {
+        if (l === src || arrays[l].get(p) === arrays[src].get(p)) continue;
+        if (done[l].some((q) => p.startsWith(`${q}.`))) continue; // an outer array already covers it
+        done[l].push(p);
+        const own = under(values[l].keys(), p);
+        for (const k of [...own, ...srcKeys]) handled.add(`${l}\u0000${k}`);
+        if (lang && l !== lang) continue;
+        const surplus = own.filter((k) => !values[src].has(k) && (!only || k.startsWith(only)));
+        if (surplus.length) surplus.forEach((k) => deletions.push({ key: k, langs: [l] }));
+        for (const k of srcKeys) {
+          if (only && !k.startsWith(only)) continue;
+          jobs.push({ key: k, source: src, targets: [l], mode: 'new', realign: true, sourceNew: val(src, k), existing: {} });
+        }
+      }
+    }
+  }
+
   for (const key of selected) {
-    const present = languages.filter((l) => val(l, key) !== undefined);
+    const present = languages.filter((l) => val(l, key) !== undefined && !isHandled(l, key));
 
     // Deleted from the primary -> propagate.
     if (lock?.languages?.[primary]?.[key] !== undefined && val(primary, key) === undefined) {
@@ -71,7 +113,7 @@ export function computeDiff({ values, lock, config, only, force = false, lang })
     }
     if (present.length === 0) continue;
 
-    let changedLangs = languages.filter((l) => changed(l, key));
+    let changedLangs = languages.filter((l) => !isHandled(l, key) && changed(l, key));
     if (force && val(primary, key) !== undefined) changedLangs = [primary];
 
     let source;
@@ -79,11 +121,11 @@ export function computeDiff({ values, lock, config, only, force = false, lang })
     if (changedLangs.length > 0) {
       source = changedLangs.includes(primary) ? primary : changedLangs[0];
       if (changedLangs.length > 1) conflicts.push({ key, langs: changedLangs, winner: source });
-      targets = languages.filter((l) => l !== source);
+      targets = languages.filter((l) => l !== source && !isHandled(l, key));
     } else {
-      const missing = languages.filter((l) => val(l, key) === undefined);
+      const missing = languages.filter((l) => val(l, key) === undefined && !isHandled(l, key));
       if (missing.length === 0) continue;
-      source = val(primary, key) !== undefined ? primary : present[0];
+      source = present.includes(primary) ? primary : present[0];
       targets = missing;
     }
     if (lang) targets = targets.filter((t) => t === lang);

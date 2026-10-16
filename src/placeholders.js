@@ -97,3 +97,32 @@ export function validateTranslation(source, translated) {
   }
   return { ok: true };
 }
+
+/**
+ * Give `translated` exactly the leading/trailing whitespace of `source`. Models tend to trim, and
+ * strings that are concatenated in the UI ("Hello " + name) depend on it.
+ * @param {string} source @param {string} translated
+ */
+export function matchWhitespace(source, translated) {
+  const lead = source.match(/^\s*/)[0];
+  const trail = source.trim() === '' ? '' : source.match(/\s*$/)[0];
+  return lead + translated.trim() + trail;
+}
+
+const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+const hasTerm = (text, term) => new RegExp(`(?<![\\p{L}\\p{N}])${escapeRe(term)}(?![\\p{L}\\p{N}])`, 'u').test(text);
+
+/**
+ * Glossary terms present in the source must appear with their fixed rendering in the translation.
+ * @param {string} source @param {string} translated
+ * @param {Record<string, string | Record<string,string>>} glossary @param {string} targetLang
+ * @returns {{ok: true} | {ok: false, reason: string}}
+ */
+export function checkGlossary(source, translated, glossary, targetLang) {
+  for (const [term, v] of Object.entries(glossary ?? {})) {
+    const rendering = typeof v === 'string' ? v : v?.[targetLang];
+    if (rendering === undefined || !hasTerm(source, term)) continue;
+    if (!hasTerm(translated, rendering)) return { ok: false, reason: `glossary: "${term}" must appear as "${rendering}"` };
+  }
+  return { ok: true };
+}
