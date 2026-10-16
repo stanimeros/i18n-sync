@@ -178,10 +178,11 @@ test('gemini provider retries on 429 and parses JSON', async () => {
   const out = await translateBatch({ items: [{ id: '0', text: 'Hi' }], sourceLang: 'en', targetLang: 'el', cfg, fetchImpl, baseDelayMs: 1 });
   assert.deepEqual(out, { 0: 'Γεια' });
   assert.equal(n, 2);
-  assert.match(seenReq.url, /gemini-2\.5-flash:generateContent$/);
+  assert.match(seenReq.url, /gemini-3\.5-flash-lite:generateContent$/);
   assert.equal(seenReq.init.headers['x-goog-api-key'], 'k');
   const body = JSON.parse(seenReq.init.body);
   assert.equal(body.generationConfig.responseMimeType, 'application/json');
+  assert.equal('temperature' in body.generationConfig, false);
 });
 
 test('glossary miss is retried once, then accepted; whitespace restored', async () => {

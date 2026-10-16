@@ -17,9 +17,33 @@ import path from 'node:path';
  * @property {Record<string, string | Record<string,string>>} glossary
  * @property {Record<string,string>} tone
  * @property {boolean} gitContext
+ * @property {string} effort   Anthropic effort level for translation requests.
+ * @property {string | null} thinkingLevel  Gemini thinking level ("minimal" | "medium" | "high"), null = model default.
+ * @property {Record<string, {input: number, output: number}>} pricing  USD per 1M tokens, overrides built-in prices.
+ * @property {ReviewConfig} review
  * @property {string} baseDir   Absolute directory of the config file.
  * @property {string} lockPath  Absolute path of the lock file.
  */
+
+/**
+ * @typedef {Object} ReviewConfig
+ * @property {boolean} enabled
+ * @property {'gemini'|'anthropic'} provider
+ * @property {string} model
+ * @property {string} apiKeyEnv
+ * @property {number} batchSize
+ * @property {string} effort
+ * @property {string | null} thinkingLevel
+ */
+
+export const PROVIDER_NAMES = ['gemini', 'anthropic', 'claude-cli'];
+const THINKING_LEVELS = ['minimal', 'medium', 'high'];
+const DEFAULTS = {
+  gemini: { model: 'gemini-3.5-flash-lite', apiKeyEnv: 'GEMINI_API_KEY', reviewModel: 'gemini-3.6-flash' },
+  anthropic: { model: 'claude-sonnet-5-5', apiKeyEnv: 'ANTHROPIC_API_KEY', reviewModel: 'claude-opus-5-5' },
+  // Uses the logged-in Claude Code CLI; no API key. Bigger batches: one CLI process per language is enough.
+  'claude-cli': { model: 'claude-sonnet-5-5', apiKeyEnv: '', reviewModel: 'claude-opus-5-5', batchSize: 200 },
+};
 
 export const DEFAULT_CONFIG_NAME = 'i18n-sync.config.json';
 
@@ -122,13 +146,13 @@ export function normalizeConfig(raw, baseDir) {
     errors.push(`"primary" (${JSON.stringify(primary)}) must be one of "languages".`);
   }
 
-  const batchSize = raw.batchSize ?? 40;
+  const provider = raw.provider ?? 'gemini';
+  if (!PROVIDER_NAMES.includes(provider)) errors.push(`Unsupported "provider": ${JSON.stringify(provider)} (use ${PROVIDER_NAMES.map((n) => `"${n}"`).join(', ')}).`);
+
+  const batchSize = raw.batchSize ?? DEFAULTS[provider]?.batchSize ?? 40;
   if (!Number.isInteger(batchSize) || batchSize < 1) errors.push('"batchSize" must be a positive integer.');
   const concurrency = raw.concurrency ?? 8;
   if (!Number.isInteger(concurrency) || concurrency < 1) errors.push('"concurrency" must be a positive integer.');
-
-  const provider = raw.provider ?? 'gemini';
-  if (provider !== 'gemini') errors.push(`Unsupported "provider": ${JSON.stringify(provider)} (only "gemini" is available).`);
 
   for (const field of ['context', 'model', 'apiKeyEnv', 'lockFile']) {
     if (raw[field] !== undefined && typeof raw[field] !== 'string') errors.push(`"${field}" must be a string.`);
@@ -148,9 +172,58 @@ export function normalizeConfig(raw, baseDir) {
   }
   if (raw.gitContext !== undefined && typeof raw.gitContext !== 'boolean') errors.push('"gitContext" must be a boolean.');
 
+
+  if (raw.effort !== undefined && (typeof raw.effort !== 'string' || !raw.effort)) errors.push('"effort" must be a non-empty string.');
+  const levelOk = (v) => v === null || THINKING_LEVELS.includes(v);
+  if (raw.thinkingLevel !== undefined && !levelOk(raw.thinkingLevel)) {
+    errors.push(`"thinkingLevel" must be one of ${THINKING_LEVELS.map((l) => `"${l}"`).join(', ')} or null.`);
+  }
+  const pricing = raw.pricing ?? {};
+  if (typeof pricing !== 'object' || Array.isArray(pricing) || pricing === null) {
+    errors.push('"pricing" must be an object of model -> {input, output}.');
+  } else {
+    for (const [model, p] of Object.entries(pricing)) {
+      const num = (x) => typeof x === 'number' && Number.isFinite(x) && x >= 0;
+      if (!p || typeof p !== 'object' || !num(p.input) || !num(p.output)) {
+        errors.push(`"pricing.${model}" must be {"input": number, "output": number} (USD per 1M tokens).`);
+      }
+    }
+  }
+
+  if (raw.confirmAbove !== undefined && raw.confirmAbove !== null && !(typeof raw.confirmAbove === 'number' && raw.confirmAbove >= 0)) {
+    errors.push('"confirmAbove" must be a non-negative number (USD) or null.');
+  }
+
+  const rv = raw.review ?? {};
+  if (typeof rv !== 'object' || Array.isArray(rv) || rv === null) {
+    errors.push('"review" must be an object.');
+  } else {
+    if (rv.enabled !== undefined && typeof rv.enabled !== 'boolean') errors.push('"review.enabled" must be a boolean.');
+    if (rv.provider !== undefined && !PROVIDER_NAMES.includes(rv.provider)) errors.push(`"review.provider" must be one of ${PROVIDER_NAMES.map((n) => `"${n}"`).join(', ')}.`);
+    for (const f of ['model', 'apiKeyEnv', 'effort']) {
+      if (rv[f] !== undefined && (typeof rv[f] !== 'string' || !rv[f])) errors.push(`"review.${f}" must be a non-empty string.`);
+    }
+    if (rv.batchSize !== undefined && (!Number.isInteger(rv.batchSize) || rv.batchSize < 1)) errors.push('"review.batchSize" must be a positive integer.');
+    if (rv.thinkingLevel !== undefined && !levelOk(rv.thinkingLevel)) {
+      errors.push(`"review.thinkingLevel" must be one of ${THINKING_LEVELS.map((l) => `"${l}"`).join(', ')} or null.`);
+    }
+  }
+
   if (errors.length) throw new Error(`Invalid config:\n  - ${errors.join('\n  - ')}`);
 
   const lockFile = raw.lockFile ?? 'i18n.lock.json';
+  const model = raw.model ?? DEFAULTS[provider].model;
+  const rProvider = rv.provider ?? 'gemini';
+  /** @type {ReviewConfig} */
+  const review = {
+    enabled: rv.enabled ?? false,
+    provider: rProvider,
+    model: rv.model ?? DEFAULTS[rProvider].reviewModel,
+    apiKeyEnv: rv.apiKeyEnv ?? DEFAULTS[rProvider].apiKeyEnv,
+    batchSize: rv.batchSize ?? DEFAULTS[rProvider].batchSize ?? 40,
+    effort: rv.effort ?? 'medium',
+    thinkingLevel: rv.thinkingLevel ?? null,
+  };
   return {
     format,
     files,
@@ -158,14 +231,20 @@ export function normalizeConfig(raw, baseDir) {
     primary,
     lockFile,
     provider,
-    model: raw.model ?? 'gemini-2.5-flash',
-    apiKeyEnv: raw.apiKeyEnv ?? 'GEMINI_API_KEY',
+    model,
+    apiKeyEnv: raw.apiKeyEnv ?? DEFAULTS[provider].apiKeyEnv,
     batchSize,
     concurrency,
     context: raw.context ?? '',
     glossary,
     tone,
     gitContext: raw.gitContext ?? true,
+    effort: raw.effort ?? 'medium',
+    // Gemini 2.5 models do not support thinkingLevel, so the "minimal" default only applies to newer models.
+    thinkingLevel: raw.thinkingLevel !== undefined ? raw.thinkingLevel : (/^gemini-2\./.test(model) ? null : 'minimal'),
+    pricing,
+    confirmAbove: raw.confirmAbove === undefined ? 1 : raw.confirmAbove,
+    review,
     baseDir,
     lockPath: path.resolve(baseDir, lockFile),
   };
@@ -201,7 +280,7 @@ export const STARTER_CONFIG = {
   primary: 'en',
   lockFile: 'i18n.lock.json',
   provider: 'gemini',
-  model: 'gemini-2.5-flash',
+  model: 'gemini-3.5-flash-lite',
   apiKeyEnv: 'GEMINI_API_KEY',
   batchSize: 40,
   context: 'Describe your product and its audience here so translations match your voice.',
@@ -209,3 +288,19 @@ export const STARTER_CONFIG = {
   tone: {},
   gitContext: true,
 };
+
+/**
+ * Switch the review provider for one run (CLI --review-with), using that provider's default model,
+ * key variable and batch size unless the config already targets the same provider.
+ * @param {Config} cfg @param {string} name
+ * @returns {Config}
+ */
+export function withReviewProvider(cfg, name) {
+  if (!PROVIDER_NAMES.includes(name)) throw new Error(`--review-with must be one of ${PROVIDER_NAMES.join(', ')}.`);
+  if (cfg.review.provider === name) return { ...cfg, review: { ...cfg.review, enabled: true } };
+  const d = DEFAULTS[name];
+  return {
+    ...cfg,
+    review: { ...cfg.review, enabled: true, provider: name, model: d.reviewModel, apiKeyEnv: d.apiKeyEnv, batchSize: d.batchSize ?? 40, thinkingLevel: null },
+  };
+}

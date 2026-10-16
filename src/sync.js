@@ -5,9 +5,16 @@ import * as jsonFormat from './formats/json.js';
 import * as arbFormat from './formats/arb.js';
 import { fileAt, fileHistory } from './git.js';
 import { provider as gemini } from './llm/gemini.js';
+import { provider as anthropic } from './llm/anthropic.js';
+import { provider as claudeCli } from './llm/claude-cli.js';
+import { pool } from './pool.js';
+import { groupJobs, buildItem, reviewConfig } from './jobs.js';
+import { reviewEntries, formatReview } from './review.js';
+import { estimateJobs, estimateReview } from './estimate.js';
+import { createUsage, summarizeUsage, formatUsage } from './pricing.js';
 
 const FORMATS = { json: jsonFormat, arb: arbFormat };
-const PROVIDERS = { gemini };
+const PROVIDERS = { gemini, anthropic, 'claude-cli': claudeCli };
 
 /**
  * @typedef {Object} SyncOptions
@@ -16,24 +23,14 @@ const PROVIDERS = { gemini };
  * @property {string} [only]
  * @property {boolean} [force]
  * @property {string} [lang]
- * @property {(args: {items: any[], sourceLang: string, targetLang: string, cfg: any, note?: string}) => Promise<Record<string,string>>} [translate]
+ * @property {boolean} [review]  override `review.enabled` (CLI --review / --no-review)
+ * @property {(estimatedUsd: number) => Promise<boolean>} [confirm] asked when the estimate exceeds `confirmAbove`
+ * @property {(args: {items: any[], sourceLang: string, targetLang: string, cfg: any, note?: string, onUsage?: Function}) => Promise<Record<string,string>>} [translate]
  *   injected translate function (defaults to the configured provider)
+ * @property {(args: {items: any[], sourceLang: string, targetLang: string, cfg: any, onUsage?: Function}) => Promise<Record<string,any>>} [reviewBatch]
+ *   injected review function (defaults to the configured review provider)
  * @property {(msg: string) => void} [log]
  */
-
-/** Run async tasks with a concurrency limit. */
-async function pool(tasks, limit) {
-  const results = new Array(tasks.length);
-  let next = 0;
-  const worker = async () => {
-    while (next < tasks.length) {
-      const i = next++;
-      results[i] = await tasks[i]();
-    }
-  };
-  await Promise.all(Array.from({ length: Math.min(limit, tasks.length) }, worker));
-  return results;
-}
 
 /** Load every language through the configured format. */
 function loadAll(cfg) {
@@ -90,37 +87,14 @@ function enrichWithGit(jobs, cfg, lock) {
  * @returns {Promise<{results: Map<string,string>, failures: {key: string, lang: string, reason: string}[]}>}
  *   results keyed by `${lang}\u0000${key}`
  */
-async function runJobs(jobs, cfg, loaded, translate, log) {
+async function runJobs(jobs, cfg, loaded, translate, log, onUsage) {
   const rk = (lang, key) => `${lang}\u0000${key}`;
-  const groups = new Map(); // `${source}->${target}` -> {source, target, entries}
-  for (const job of jobs) {
-    for (const target of job.targets) {
-      const g = `${job.source}->${target}`;
-      if (!groups.has(g)) groups.set(g, { source: job.source, target, entries: [] });
-      groups.get(g).entries.push({ job, target });
-    }
-  }
+  const groups = groupJobs(jobs);
 
   /** @type {(() => Promise<void>)[]} */
   const tasks = [];
   const results = new Map();
   const failures = [];
-
-  const buildItem = (job, target, id) => {
-    const item = { id, text: job.sourceNew };
-    const current = job.existing[target];
-    if (current !== undefined && job.sourceOld !== undefined) {
-      item.previousSource = job.sourceOld;
-      item.currentTranslation = current;
-    } else if (current !== undefined) {
-      item.currentTranslation = current;
-    }
-    if (job.source !== cfg.primary && target !== cfg.primary) {
-      const ref = loaded[cfg.primary].values.get(job.key);
-      if (ref !== undefined) item.reference = ref;
-    }
-    return item;
-  };
 
   const total = [...groups.values()].reduce((n, g) => n + g.entries.length, 0);
   let done = 0;
@@ -132,11 +106,11 @@ async function runJobs(jobs, cfg, loaded, translate, log) {
         const ids = new Map(chunk.map((c, n) => [String(n), c]));
         const attempt = async (pending, failureNotes) => {
           const items = pending.map(([id, c]) => {
-            const item = buildItem(c.job, c.target, id);
+            const item = buildItem(c.job, c.target, id, cfg, loaded);
             if (failureNotes?.[id]) item.failure = failureNotes[id];
             return item;
           });
-          const out = await translate({ items, sourceLang: source, targetLang: target, cfg, note });
+          const out = await translate({ items, sourceLang: source, targetLang: target, cfg, note, onUsage });
           const bad = {};
           for (const [id, c] of pending) {
             let v = out?.[id];
@@ -176,6 +150,43 @@ async function runJobs(jobs, cfg, loaded, translate, log) {
   return { results, failures };
 }
 
+/** Write the given languages through the configured format. Returns the written file paths. */
+function saveLanguages(langs, loaded, values, cfg) {
+  const fmt = FORMATS[cfg.format];
+  const written = [];
+  const primaryOrder = loaded[cfg.primary].order;
+  for (const l of langs) {
+    const o = { order: primaryOrder };
+    if (cfg.format === 'json') {
+      o.extras = new Map([...loaded[l].extras, ...(l === cfg.primary ? [] : loaded[cfg.primary].extras)]);
+    } else {
+      o.meta = loaded[l].meta;
+      o.globals = loaded[l].globals;
+    }
+    written.push(...fmt.save(l, values[l], cfg, o));
+  }
+  return written;
+}
+
+/** Fail early when the review provider has no API key. */
+function assertReviewReady(cfg) {
+  if (cfg.review.provider === 'claude-cli') return PROVIDERS['claude-cli'].assertReady();
+  if (!process.env[cfg.review.apiKeyEnv]) {
+    throw new Error(`Review is enabled but no API key was found.\nSet ${cfg.review.apiKeyEnv} (environment variable or .env file), or use --no-review.`);
+  }
+}
+
+/**
+ * Show the estimated cost before spending money and, above `cfg.confirmAbove` USD, ask `opts.confirm`.
+ * Without a confirm callback (library use) nothing is asked.
+ */
+async function confirmCost(estimate, cfg, opts, log) {
+  for (const l of formatUsage(estimate, { estimate: true })) log(l);
+  const c = estimate.total.cost;
+  if (cfg.confirmAbove === null || c === null || c <= cfg.confirmAbove || !opts.confirm) return;
+  if (!(await opts.confirm(c))) throw new Error('Aborted: estimated cost not confirmed.');
+}
+
 /**
  * Run a full sync (or check / dry run).
  * @param {import('./config.js').Config} cfg
@@ -183,7 +194,6 @@ async function runJobs(jobs, cfg, loaded, translate, log) {
  */
 export async function runSync(cfg, opts = {}) {
   const log = opts.log ?? (() => {});
-  const fmt = FORMATS[cfg.format];
   if (opts.lang && !cfg.languages.includes(opts.lang)) {
     throw new Error(`--lang ${opts.lang} is not in "languages" (${cfg.languages.join(', ')}).`);
   }
@@ -202,17 +212,61 @@ export async function runSync(cfg, opts = {}) {
     failures: [],
     written: [],
     lockWritten: false,
+    /** @type {ReturnType<typeof summarizeUsage> | null} estimate for the planned jobs (check / dry run) */
+    estimate: null,
+    /** @type {ReturnType<typeof summarizeUsage> | null} actual token usage and cost */
+    usage: null,
+    /** @type {import('./review.js').ReviewResult | null} */
+    review: null,
   };
-  if (opts.check || opts.dryRun) return report;
+  const reviewOn = opts.review ?? cfg.review.enabled;
+  if (opts.check || opts.dryRun) {
+    if (plan.jobs.length) report.estimate = estimateJobs({ jobs: plan.jobs, cfg, loaded, review: reviewOn });
+    return report;
+  }
 
   if (plan.jobs.length) {
     if (!opts.translate) PROVIDERS[cfg.provider].assertReady(cfg);
+    if (reviewOn && !opts.reviewBatch) assertReviewReady(cfg);
+    await confirmCost(estimateJobs({ jobs: plan.jobs, cfg, loaded, review: reviewOn }), cfg, opts, log);
   }
   const translate = opts.translate ?? PROVIDERS[cfg.provider].translateBatch;
+  const tUsage = createUsage();
+  const rUsage = createUsage();
 
   if (cfg.gitContext) enrichWithGit(plan.jobs, cfg, lock);
-  const { results, failures } = plan.jobs.length ? await runJobs(plan.jobs, cfg, loaded, translate, log) : { results: new Map(), failures: [] };
+  const { results, failures } = plan.jobs.length ? await runJobs(plan.jobs, cfg, loaded, translate, log, tUsage.add) : { results: new Map(), failures: [] };
   report.failures = failures;
+
+  // Optional review of everything translated in this run, before anything is written.
+  if (reviewOn && results.size) {
+    const entries = [];
+    for (const job of plan.jobs) {
+      for (const t of job.targets) {
+        const translation = results.get(`${t}\u0000${job.key}`);
+        if (translation === undefined) continue;
+        const e = { key: job.key, sourceLang: job.source, targetLang: t, sourceText: job.sourceNew, translation };
+        if (job.source !== cfg.primary && t !== cfg.primary) {
+          const ref = loaded[cfg.primary].values.get(job.key);
+          if (ref !== undefined) e.reference = ref;
+        }
+        entries.push(e);
+      }
+    }
+    report.review = await reviewEntries({
+      entries,
+      cfg,
+      reviewCfg: reviewConfig(cfg),
+      reviewBatch: opts.reviewBatch ?? PROVIDERS[cfg.review.provider].reviewBatch,
+      onUsage: rUsage.add,
+      log,
+    });
+    for (const f of report.review.fixes) results.set(`${f.lang}\u0000${f.key}`, f.new);
+  }
+  report.usage = summarizeUsage({
+    translate: { model: cfg.model, ...tUsage.totals },
+    review: { model: cfg.review.model, ...rUsage.totals },
+  }, cfg);
 
   // Apply results.
   const touched = new Set();
@@ -239,18 +293,7 @@ export async function runSync(cfg, opts = {}) {
     }
   }
 
-  // Write files (only languages that changed).
-  const primaryOrder = loaded[cfg.primary].order;
-  for (const l of touched) {
-    const o = { order: primaryOrder };
-    if (cfg.format === 'json') {
-      o.extras = new Map([...loaded[l].extras, ...(l === cfg.primary ? [] : loaded[cfg.primary].extras)]);
-    } else {
-      o.meta = loaded[l].meta;
-      o.globals = loaded[l].globals;
-    }
-    report.written.push(...fmt.save(l, values[l], cfg, o));
-  }
+  report.written.push(...saveLanguages(touched, loaded, values, cfg));
 
   // Lock: hashes of everything, except pairs that are still pending (failed or filtered out).
   const newLock = buildLock(values, cfg.languages);
@@ -273,6 +316,84 @@ export async function runSync(cfg, opts = {}) {
   return report;
 }
 
+/**
+ * @typedef {Object} ReviewOptions
+ * @property {string} [lang]   only this (non-primary) language
+ * @property {string} [only]   only keys starting with this prefix
+ * @property {boolean} [dryRun] print fixes without applying them
+ * @property {(args: any) => Promise<Record<string,any>>} [reviewBatch] injected review function
+ * @property {(msg: string) => void} [log]
+ * @property {(estimatedUsd: number) => Promise<boolean>} [confirm] asked when the estimate exceeds `confirmAbove`
+ */
+
+/**
+ * Review ALL existing translations of the selected target languages against the primary text.
+ * @param {import('./config.js').Config} cfg
+ * @param {ReviewOptions} [opts]
+ */
+export async function runReview(cfg, opts = {}) {
+  const log = opts.log ?? (() => {});
+  if (opts.lang && !cfg.languages.includes(opts.lang)) {
+    throw new Error(`--lang ${opts.lang} is not in "languages" (${cfg.languages.join(', ')}).`);
+  }
+  if (opts.lang === cfg.primary) throw new Error(`--lang ${opts.lang} is the primary language; choose a target language to review.`);
+  const loaded = loadAll(cfg);
+  const values = Object.fromEntries(cfg.languages.map((l) => [l, loaded[l].values]));
+  const lock = readLock(cfg.lockPath);
+  const arrays = loaded[cfg.primary].arrays ? Object.fromEntries(cfg.languages.map((l) => [l, loaded[l].arrays])) : undefined;
+  const full = computeDiff({ values, lock, config: cfg, arrays });
+  if (full.jobs.length + full.deletions.length > 0) {
+    throw new Error('Translations are pending (run "i18n-sync" first, then review); refusing to review a half-synced project.');
+  }
+  if (!opts.reviewBatch) assertReviewReady(cfg);
+
+  const targets = opts.lang ? [opts.lang] : cfg.languages.filter((l) => l !== cfg.primary);
+  const entries = [];
+  for (const t of targets) {
+    for (const [key, translation] of values[t]) {
+      if (opts.only && !key.startsWith(opts.only)) continue;
+      const sourceText = values[cfg.primary].get(key);
+      if (sourceText === undefined || sourceText.trim() === '') continue;
+      entries.push({ key, sourceLang: cfg.primary, targetLang: t, sourceText, translation });
+    }
+  }
+
+  await confirmCost(estimateReview({ entries, cfg }), cfg, opts, log);
+  const usage = createUsage();
+  const result = await reviewEntries({
+    entries,
+    cfg,
+    reviewCfg: reviewConfig(cfg),
+    reviewBatch: opts.reviewBatch ?? PROVIDERS[cfg.review.provider].reviewBatch,
+    onUsage: usage.add,
+    log,
+  });
+  const report = {
+    review: result,
+    dryRun: !!opts.dryRun,
+    usage: summarizeUsage({ review: { model: cfg.review.model, ...usage.totals } }, cfg),
+    written: [],
+    lockWritten: false,
+  };
+  if (opts.dryRun || !result.fixes.length) return report;
+
+  const touched = new Set();
+  for (const f of result.fixes) {
+    values[f.lang].set(f.key, f.new);
+    touched.add(f.lang);
+    // Keep the lock in step so the fix is not mistaken for a human edit on the next sync.
+    if (lock?.languages?.[f.lang]) lock.languages[f.lang][f.key] = hashValue(f.new);
+  }
+  report.written = saveLanguages(touched, loaded, values, cfg);
+  if (lock) report.lockWritten = writeLock(cfg.lockPath, lock);
+  return report;
+}
+
+/** Human readable review command result. */
+export function formatReviewReport(report) {
+  return [...formatReview(report.review, { dryRun: report.dryRun }), ...formatUsage(report.usage)];
+}
+
 /** Human readable plan (dry-run / check). @param {ReturnType<typeof computeDiff>} plan */
 export function formatPlan(plan) {
   const lines = [];
@@ -286,6 +407,11 @@ export function formatPlan(plan) {
   return lines;
 }
 
+/** Estimated token usage and cost lines (dry-run / check). @param {{estimate: any}} report */
+export function formatEstimate(report) {
+  return report.estimate ? formatUsage(report.estimate, { estimate: true }) : [];
+}
+
 /** Human readable result summary. */
 export function formatReport(report) {
   const lines = [];
@@ -297,6 +423,8 @@ export function formatReport(report) {
     lines.push(`${lang}: ${s.updated} updated, ${s.new} new, ${s.deleted} deleted${s.failed ? `, ${s.failed} FAILED` : ''}`);
   }
   for (const f of report.failures) lines.push(`failed: ${f.lang} ${f.key}: ${f.reason} (will retry next run)`);
+  if (report.review) lines.push(...formatReview(report.review));
+  if (report.usage) lines.push(...formatUsage(report.usage));
   if (!report.pending) lines.push(report.lockWritten ? 'Everything in sync; lock file updated.' : 'Everything in sync.');
   return lines;
 }

@@ -1,6 +1,6 @@
 {
   "name": "@stanimeros/i18n-sync",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Keep all locale files in sync with an LLM. Any language can be the source of a change.",
   "type": "module",
   "bin": {
@@ -20,7 +20,28 @@
   "engines": {
     "node": ">=20"
   },
-  "keywords": ["i18n", "l10n", "translation", "localization", "gemini", "llm", "arb", "flutter", "i18next"],
+  "peerDependencies": {
+    "@anthropic-ai/sdk": ">=0.60.0"
+  },
+  "peerDependenciesMeta": {
+    "@anthropic-ai/sdk": {
+      "optional": true
+    }
+  },
+  "keywords": [
+    "i18n",
+    "l10n",
+    "translation",
+    "localization",
+    "gemini",
+    "llm",
+    "arb",
+    "flutter",
+    "i18next",
+    "claude",
+    "anthropic",
+    "review"
+  ],
   "repository": {
     "type": "git",
     "url": "git+https://github.com/stanimeros/i18n-sync.git"
