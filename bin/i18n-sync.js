@@ -4,13 +4,15 @@ import path from 'node:path';
 import { parseArgs } from 'node:util';
 import readline from 'node:readline/promises';
 import { loadConfig, loadDotEnv, withReviewProvider, STARTER_CONFIG, DEFAULT_CONFIG_NAME } from '../src/config.js';
-import { runSync, runReview, formatPlan, formatReport, formatEstimate, formatReviewReport } from '../src/sync.js';
+import { runSync, runReview, runAccept, formatPlan, formatReport, formatEstimate, formatReviewReport } from '../src/sync.js';
 
 const HELP = `i18n-sync - keep all locale files in sync with an LLM
 
 Usage:
   i18n-sync [options]        Sync all languages
   i18n-sync review [options] Review ALL existing translations against the primary language
+  i18n-sync accept [options] Mark current values as in sync without translating (after a hand fix
+                             in one language that should not propagate); use --lang / --only
   i18n-sync init             Write a starter ${DEFAULT_CONFIG_NAME}
 
 Options:
@@ -65,7 +67,7 @@ async function main() {
   }
 
   if (values.review && values['no-review']) throw new Error('Use either --review or --no-review, not both.');
-  if (command && command !== 'review') throw new Error(`Unknown command "${command}". Try --help.`);
+  if (command && command !== 'review' && command !== 'accept') throw new Error(`Unknown command "${command}". Try --help.`);
 
   loadDotEnv(process.cwd());
   let cfg = loadConfig(values.config);
@@ -85,6 +87,13 @@ async function main() {
     rl.close();
     return /^y(es)?$/i.test(answer.trim());
   };
+
+  if (command === 'accept') {
+    const { accepted } = runAccept(cfg, { lang: values.lang, only: values.only });
+    for (const a of accepted) console.log(`accepted ${a.lang} ${a.key}`);
+    console.log(accepted.length ? `${accepted.length} value(s) marked as in sync.` : 'Nothing to accept.');
+    return;
+  }
 
   if (command === 'review') {
     const rr = await runReview(cfg, { lang: values.lang, only: values.only, dryRun: values['dry-run'], confirm, log: (m) => console.log(m) });

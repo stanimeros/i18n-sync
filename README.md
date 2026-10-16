@@ -57,7 +57,7 @@ Commit `i18n.lock.json` together with your locale files.
 | `tone` | `{}` | Per target language, e.g. `{"de": "formal (Sie)"}` |
 | `gitContext` | `true` | Walk the source file's git history back to the last synced version, so the model sees the previous text and the commit messages since then (works for committed and uncommitted edits) |
 
-CLI flags: `--check`, `--dry-run`, `--only <prefix>`, `--force`, `--lang <code>`, `--review`, `--no-review`, `--review-with <provider>`, `--yes`, `--config <path>`, `--help`, `--version`. Subcommands: `init`, `review`.
+CLI flags: `--check`, `--dry-run`, `--only <prefix>`, `--force`, `--lang <code>`, `--review`, `--no-review`, `--review-with <provider>`, `--yes`, `--config <path>`, `--help`, `--version`. Subcommands: `init`, `review`, `accept`.
 
 ## Cost
 
@@ -160,6 +160,16 @@ de main:hero.title: "Willkommen zurueck" -> "Willkommen zurueck bei Acme" (omitt
 review: 120 reviewed, 5 flagged, 4 applied, 1 rejected
 review: 9,100 in / 480 out tokens, $0.0086 (gemini-3.6-flash)
 ```
+
+## Fixing one language by hand
+
+Editing a translation counts as a human edit, so by default it propagates to every other language (that is the point: any language can be the source). To fix a typo in one language only, edit it and then mark it as in sync:
+
+```sh
+npx i18n-sync accept --lang it --only main:seo.jsonLd.jobTitle
+```
+
+`accept` rewrites the lock entries of the selected keys to their current values and translates nothing.
 
 ## How change detection works
 

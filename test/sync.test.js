@@ -202,3 +202,17 @@ test('glossary miss is retried once, then accepted; whitespace restored', async 
   assert.equal(readJson(dir, 'locales/de.json').a, 'KI-Werkzeuge ');
   assert.ok(logs.some((l) => /warning: de a: glossary/.test(l)));
 });
+
+import { runAccept } from '../src/sync.js';
+
+test('accept: a hand fix in one language is not propagated', async () => {
+  const { dir, cfg } = setup();
+  await runSync(cfg, { translate: fake() });
+  write(dir, 'locales/de.json', { ...readJson(dir, 'locales/de.json'), b: 'Fixed B' });
+  const { accepted } = runAccept(cfg, { lang: 'de', only: 'b' });
+  assert.deepEqual(accepted, [{ lang: 'de', key: 'b' }]);
+  const t = fake();
+  const r = await runSync(cfg, { translate: t });
+  assert.equal(r.pending, false);
+  assert.equal(t.calls.length, 0);
+});

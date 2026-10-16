@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.3.2
+
+- `i18n-sync accept [--lang] [--only]`: mark current values as in sync without translating, for one-language hand fixes that should not propagate.
+
 ## 0.3.1
 
 - A key added to several languages at once (absent from the lock everywhere) is no longer a conflict: those languages are kept as translated and only the missing ones are filled. Array additions are still detected in any language.

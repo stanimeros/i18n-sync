@@ -428,3 +428,31 @@ export function formatReport(report) {
   if (!report.pending) lines.push(report.lockWritten ? 'Everything in sync; lock file updated.' : 'Everything in sync.');
   return lines;
 }
+
+/**
+ * Mark the current values of the selected keys as in sync without translating anything, e.g. after
+ * hand-fixing a typo in one language that should NOT propagate to the others.
+ * @param {import('./config.js').Config} cfg
+ * @param {{lang?: string, only?: string, log?: (msg: string) => void}} [opts]
+ * @returns {{accepted: {lang: string, key: string}[], lockWritten: boolean}}
+ */
+export function runAccept(cfg, opts = {}) {
+  if (opts.lang && !cfg.languages.includes(opts.lang)) {
+    throw new Error(`--lang ${opts.lang} is not in "languages" (${cfg.languages.join(', ')}).`);
+  }
+  const loaded = loadAll(cfg);
+  const values = Object.fromEntries(cfg.languages.map((l) => [l, loaded[l].values]));
+  const lock = readLock(cfg.lockPath) ?? buildLock(values, cfg.languages);
+  const accepted = [];
+  for (const l of opts.lang ? [opts.lang] : cfg.languages) {
+    const entries = (lock.languages[l] ??= {});
+    for (const [key, v] of values[l]) {
+      if (opts.only && !key.startsWith(opts.only)) continue;
+      const h = hashValue(v);
+      if (entries[key] === h) continue;
+      entries[key] = h;
+      accepted.push({ lang: l, key });
+    }
+  }
+  return { accepted, lockWritten: writeLock(cfg.lockPath, lock) };
+}
